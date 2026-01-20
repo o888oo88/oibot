@@ -2,20 +2,22 @@ import asyncio
 import aiohttp
 import time
 import sys
+import os
 from collections import defaultdict, deque
 from datetime import datetime
 
 # ================= НАСТРОЙКИ =================
 
-BOT_TOKEN = "8419391176:AAH7wjseRf5x0Pw0Op53X3GzyHqgJY_9-PM"   # <-- вставь НОВЫЙ токен
-CHANNEL = "@bybitoialert"
+# Лучше хранить токен в Railway -> Variables: BOT_TOKEN
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8419391176:AAH7wjseRf5x0Pw0Op53X3GzyHqgJY_9-PM")
+CHANNEL = os.environ.get("CHANNEL", "@bybitoialert")
 
 POLL_SECONDS = 3
 
 # Пороги (%)
-TICK_THRESHOLD = 4.0     # ~1 сек
-W5_THRESHOLD = 4.0       # 5 сек
-W10_THRESHOLD = 4.0      # 10 сек
+TICK_THRESHOLD = 4.0     # между двумя опросами (~3с)
+W5_THRESHOLD = 4.0       # за 5 сек
+W10_THRESHOLD = 4.0      # за 10 сек
 
 W5_SEC = 5
 W10_SEC = 10
@@ -23,10 +25,16 @@ W10_SEC = 10
 COOLDOWN_SEC = 180
 ONLY_USDT = True
 
-KEEP_SEC = 30            # хранить историю (должно быть > 10)
+KEEP_SEC = 40            # хранить историю (должно быть > 10)
 
 BYBIT_TICKERS_URL = "https://api.bybit.com/v5/market/tickers?category=linear"
 TG_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
+
+# Заголовки (часто помогают против 403/WAF)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; OIBot/1.0; +https://railway.app)",
+    "Accept": "application/json",
+}
 
 # ================= СОСТОЯНИЕ =================
 
@@ -40,14 +48,18 @@ async def tg_send(session: aiohttp.ClientSession, text: str):
     url = TG_SEND_URL.format(token=BOT_TOKEN)
     payload = {"chat_id": CHANNEL, "text": text, "disable_web_page_preview": True}
     async with session.post(url, json=payload, timeout=20) as r:
-        await r.text()
+        body = await r.text()
+        if r.status != 200:
+            print(f"❌ TG send error HTTP {r.status}: {body[:300]}")
+            sys.stdout.flush()
 
 # ================= BYBIT =================
 
 async def fetch_tickers(session: aiohttp.ClientSession):
-    async with session.get(BYBIT_TICKERS_URL, timeout=20) as r:
+    async with session.get(BYBIT_TICKERS_URL, headers=HEADERS, timeout=20) as r:
         if r.status != 200:
             txt = await r.text()
+            # важно: на 403 часто приходит HTML (<TITLE>ERROR)
             raise RuntimeError(f"Bybit HTTP {r.status}: {txt[:200]}")
         data = await r.json()
 
@@ -75,6 +87,10 @@ def fmt_pct(x):
 # ================= MAIN =================
 
 async def main():
+    if not BOT_TOKEN or BOT_TOKEN == "PASTE_NEW_TOKEN_HERE":
+        print("❌ BOT_TOKEN не задан. Добавь BOT_TOKEN в Railway -> Variables.")
+        return
+
     print(
         f"✅ BOT STARTED {datetime.now().strftime('%H:%M:%S')} | poll={POLL_SECONDS}s | "
         f"thr: tick={TICK_THRESHOLD}% 5s={W5_THRESHOLD}% 10s={W10_THRESHOLD}%"
@@ -104,7 +120,7 @@ async def main():
                     if oi <= 0:
                         continue
 
-                    # пишем в историю
+                    # история
                     oi_hist[symbol].append((now, oi))
                     while oi_hist[symbol] and now - oi_hist[symbol][0][0] > KEEP_SEC:
                         oi_hist[symbol].popleft()
@@ -153,7 +169,7 @@ async def main():
                     # какие окна сработали — эмодзи
                     flags = []
                     if trig_tick:
-                        flags.append("⚡")   # 1s
+                        flags.append("⚡")   # tick (~3s)
                     if trig_5s:
                         flags.append("⏱")   # 5s
                     if trig_10s:
@@ -164,7 +180,7 @@ async def main():
                         f"{direction} {symbol}\n"
                         f"{flags_str}\n\n"
                         f"OI:\n"
-                        f"1s:  {oi_tick_pct:+.2f}%\n"
+                        f"tick(~{POLL_SECONDS}s): {oi_tick_pct:+.2f}%\n"
                         f"5s:  {fmt_pct(oi_5s_pct)}\n"
                         f"10s: {fmt_pct(oi_10s_pct)}"
                     )
@@ -186,6 +202,7 @@ async def main():
                 return
             except Exception as e:
                 print(f"⚠️ loop error: {e}")
+                sys.stdout.flush()
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
 
@@ -194,4 +211,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("🛑 STOPPED BY USER (Ctrl+C)")
-
