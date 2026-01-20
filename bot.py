@@ -10,7 +10,7 @@ from datetime import datetime
 BOT_TOKEN = "8419391176:AAH7wjseRf5x0Pw0Op53X3GzyHqgJY_9-PM"   # <-- вставь НОВЫЙ токен
 CHANNEL = "@bybitoialert"
 
-POLL_SECONDS = 1
+POLL_SECONDS = 3
 
 # Пороги (%)
 TICK_THRESHOLD = 4.0     # ~1 сек
@@ -194,3 +194,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("🛑 STOPPED BY USER (Ctrl+C)")
+
