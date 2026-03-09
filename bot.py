@@ -153,6 +153,10 @@ def pick_ts(post: dict) -> datetime | None:
 
 
 def classify(post: dict) -> str:
+    text = (post.get("content") or post.get("text") or "").strip()
+    lower = text.lower()
+
+    # 1. Явный тип из API, если есть
     for key in ("type", "postType", "kind", "__typename"):
         v = post.get(key)
         if isinstance(v, str) and v.strip():
@@ -164,35 +168,54 @@ def classify(post: dict) -> str:
             if x in {"tweet", "post"}:
                 return "original"
 
-    if any(post.get(k) for k in [
-        "retweetedTweet", "retweetedTweetId", "repostedTweet", "repostedTweetId",
-        "retweetId", "repostId", "isRetweet", "isRepost"
-    ]):
-        return "repost"
-
-    if any(post.get(k) for k in [
-        "quotedTweet", "quotedTweetId", "quotedStatus", "quoteOf", "quoteId", "isQuote"
-    ]):
-        return "quote"
-
-    if any(post.get(k) for k in [
-        "inReplyToTweetId", "in_reply_to_status_id", "inReplyToId",
-        "replyToId", "inReplyTo", "isReply"
-    ]):
-        return "reply"
-
-    text = (post.get("content") or post.get("text") or "").strip()
-    lower = text.lower()
-
-    if text.startswith("RT @"):
-        return "repost"
-
+    # 2. Reply
     if text.startswith("@"):
         return "reply"
+
+    if any(post.get(k) for k in [
+        "inReplyToTweetId",
+        "in_reply_to_status_id",
+        "inReplyToId",
+        "replyToId",
+        "inReplyTo",
+        "isReply",
+    ]):
+        return "reply"
+
+    # 3. Repost
+    if any(post.get(k) for k in [
+        "retweetedTweet",
+        "retweetedTweetId",
+        "repostedTweet",
+        "repostedTweetId",
+        "retweetId",
+        "repostId",
+        "isRetweet",
+        "isRepost",
+    ]):
+        return "repost"
+
+    if text.startswith("RT @"):
+        # спорные RT можно исключать
+        if "rt @elonmusk" in lower:
+            return "ignore"
+        return "repost"
+
+    # 4. Quote
+    if any(post.get(k) for k in [
+        "quotedTweet",
+        "quotedTweetId",
+        "quotedStatus",
+        "quoteOf",
+        "quoteId",
+        "isQuote",
+    ]):
+        return "quote"
 
     if ("x.com/" in lower or "twitter.com/" in lower) and "/status/" in lower:
         return "quote"
 
+    # 5. Original
     return "original"
 
 
@@ -248,6 +271,9 @@ def build_report(start_local: datetime, end_local: datetime, mode: str):
             continue
 
         kind = classify(p)
+        if kind == "ignore":
+            continue
+
         day = local_dt.date()
         hour = local_dt.hour
 
@@ -469,9 +495,10 @@ def parse_range_args(args: list[str]):
     tz = ZoneInfo(DEFAULT_TZ)
     start_local = parse_dt(start_str).replace(tzinfo=tz)
 
+    # ВАЖНО: если дата без времени, считаем end включительно по день
     if len(end_str.strip()) == 10:
         end_date = parse_dt(end_str).date()
-        end_local = datetime(end_date.year, end_date.month, end_date.day, 0, 0, 0, tzinfo=tz) + timedelta(days=1)
+        end_local = datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=tz) + timedelta(seconds=1)
     else:
         end_local = parse_dt(end_str).replace(tzinfo=tz)
 
@@ -597,6 +624,9 @@ async def watcher(context: ContextTypes.DEFAULT_TYPE):
             if not (start_local <= local_dt < end_local):
                 continue
             kind = classify(p)
+            if kind == "ignore":
+                continue
+
             visible.append(
                 {
                     "id": p.get("id"),
