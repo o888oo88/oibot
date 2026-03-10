@@ -11,7 +11,7 @@ from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 
-BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "8374955739:AAEpyuR99I1BIVSC6RiT-ZpqrOQJ-0zWlt8"
 
 BASE = "https://xtracker.polymarket.com/api"
 KINDS = ("original", "reply", "repost", "quote")
