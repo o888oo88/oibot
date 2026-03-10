@@ -56,7 +56,7 @@ STATE = load_state()
 
 
 # =========================
-# EXACT ENGINE — ВЗЯТО ИЗ ТВОЕГО КОДА
+# EXACT ENGINE
 # =========================
 def parse_local(s: str, tz: ZoneInfo) -> datetime:
     dt = datetime.strptime(s, "%Y-%m-%d %H:%M")
@@ -151,12 +151,15 @@ def mode_label(mode: str) -> str:
     return mode
 
 
+# =========================
+# REPORT
+# =========================
 def build_report_exact(start_local: datetime, end_local: datetime, mode: str):
     tz = ZoneInfo(DEFAULT_TZ)
     start_utc = to_utc(start_local)
     end_utc = to_utc(end_local)
-
     include_set = mode_to_include(mode)
+
     posts = get_posts(DEFAULT_USER, start_utc, end_utc, platform=DEFAULT_PLATFORM)
 
     rows = []
@@ -184,7 +187,7 @@ def build_report_exact(start_local: datetime, end_local: datetime, mode: str):
             "createdAt_utc": ts.isoformat(),
             "createdAt_local": ts_local.isoformat(),
             "kind": kind,
-            "content": p.get("content") or p.get("text"),
+            "content": (p.get("content") or p.get("text") or "").strip(),
             "raw": p,
         })
 
@@ -195,51 +198,28 @@ def build_report_exact(start_local: datetime, end_local: datetime, mode: str):
             "start_local": start_local,
             "end_local": end_local,
             "mode": mode,
-            "include_set": include_set,
             "total_pm": 0,
             "type_totals": {"original": 0, "reply": 0, "repost": 0, "quote": 0},
             "daily_df": pd.DataFrame(columns=["date_et", "original", "reply", "repost", "quote", "all", "pm_total"]),
-            "hourly_df": pd.DataFrame(columns=["hour_et", "original", "reply", "repost", "quote", "all", "pm_total"]),
             "csv_path": None,
             "png_path": None,
             "dump_path": None,
             "filtered": [],
         }
 
-    # DAILY — как в твоём коде
-    pivot = df.pivot_table(index="date_et", columns="kind", aggfunc="size", fill_value=0)
+    # Daily
+    daily = df.pivot_table(index="date_et", columns="kind", aggfunc="size", fill_value=0)
     for k in KINDS:
-        if k not in pivot.columns:
-            pivot[k] = 0
-    pivot = pivot[list(KINDS)]
-    pivot["all"] = pivot.sum(axis=1)
-
-    pivot["pm_total"] = 0
+        if k not in daily.columns:
+            daily[k] = 0
+    daily = daily[list(KINDS)]
+    daily["all"] = daily.sum(axis=1)
+    daily["pm_total"] = 0
     for k in include_set:
-        pivot["pm_total"] += pivot[k]
+        daily["pm_total"] += daily[k]
+    daily_df = daily.reset_index()
 
-    daily_df = pivot.reset_index()
-    total = int(daily_df["pm_total"].sum())
-
-    # HOURLY — на том же движке
-    hpivot = df.pivot_table(index="hour_et", columns="kind", aggfunc="size", fill_value=0)
-    for k in KINDS:
-        if k not in hpivot.columns:
-            hpivot[k] = 0
-    hpivot = hpivot[list(KINDS)]
-    hpivot["all"] = hpivot.sum(axis=1)
-
-    hpivot["pm_total"] = 0
-    for k in include_set:
-        hpivot["pm_total"] += hpivot[k]
-
-    hourly_df = hpivot.reset_index()
-
-    all_hours = pd.DataFrame({"hour_et": [f"{h:02d}" for h in range(24)]})
-    hourly_df = all_hours.merge(hourly_df, on="hour_et", how="left").fillna(0)
-    for col in ["original", "reply", "repost", "quote", "all", "pm_total"]:
-        hourly_df[col] = hourly_df[col].astype(int)
-
+    total_pm = int(daily_df["pm_total"].sum())
     type_totals = {
         "original": int(daily_df["original"].sum()),
         "reply": int(daily_df["reply"].sum()),
@@ -257,7 +237,7 @@ def build_report_exact(start_local: datetime, end_local: datetime, mode: str):
     with open(dump_path, "w", encoding="utf-8") as f:
         json.dump(filtered, f, ensure_ascii=False, indent=2)
 
-    # Heatmap
+    # Heatmap with TOTAL column
     heat_raw = df[df["kind"].isin(include_set)].copy()
     heat = heat_raw.pivot_table(index="date_et", columns="hour_et", aggfunc="size", fill_value=0)
 
@@ -265,10 +245,14 @@ def build_report_exact(start_local: datetime, end_local: datetime, mode: str):
     all_hours_cols = [f"{h:02d}" for h in range(24)]
     heat = heat.reindex(index=all_days, columns=all_hours_cols, fill_value=0)
 
-    plt.figure(figsize=(16, max(4, len(heat.index) * 0.45)))
+    heat["TOTAL"] = heat.sum(axis=1)
+
+    plt.figure(figsize=(18, max(4, len(heat.index) * 0.5)))
     plt.imshow(heat.values, aspect="auto")
-    plt.colorbar(label="Posts per hour")
-    plt.xticks(range(24), all_hours_cols)
+    plt.colorbar(label="Posts per hour / total")
+
+    x_labels = all_hours_cols + ["TOTAL"]
+    plt.xticks(range(len(x_labels)), x_labels)
     plt.yticks(range(len(heat.index)), heat.index)
     plt.xlabel("Hour ET")
     plt.ylabel("Date ET")
@@ -288,11 +272,9 @@ def build_report_exact(start_local: datetime, end_local: datetime, mode: str):
         "start_local": start_local,
         "end_local": end_local,
         "mode": mode,
-        "include_set": include_set,
-        "total_pm": total,
+        "total_pm": total_pm,
         "type_totals": type_totals,
         "daily_df": daily_df,
-        "hourly_df": hourly_df,
         "csv_path": csv_path,
         "png_path": png_path,
         "dump_path": dump_path,
@@ -301,15 +283,12 @@ def build_report_exact(start_local: datetime, end_local: datetime, mode: str):
 
 
 # =========================
-# TELEGRAM
+# TELEGRAM HELPERS
 # =========================
 def format_df_text(df: pd.DataFrame, max_rows: int = 30) -> str:
     if df.empty:
         return "No data"
-    text = df.head(max_rows).to_string(index=False)
-    if len(df) > max_rows:
-        text += f"\n... ({len(df) - max_rows} more rows)"
-    return text
+    return df.head(max_rows).to_string(index=False)
 
 
 def format_summary(report: dict) -> str:
@@ -333,8 +312,8 @@ Commands:
 /help
 /status
 
-/range 2026-03-03 2026-03-10
-/range 2026-03-03 12:00 2026-03-10 12:00
+/range 2026-03-06 2026-03-13
+/range 2026-03-06 12:00 2026-03-13 12:00
 
 /today
 
@@ -347,14 +326,19 @@ Commands:
 """.strip()
 
 
+# =========================
+# TIME WINDOWS
+# =========================
 def parse_range_args(args: list[str]):
     tz = ZoneInfo(DEFAULT_TZ)
 
+    # date-only => Polymarket style 12:00 -> 12:00
     if len(args) == 2:
-        start_local = parse_local(f"{args[0]} 00:00", tz)
-        end_local = parse_local(f"{args[1]} 23:59", tz)
+        start_local = parse_local(f"{args[0]} 12:00", tz)
+        end_local = parse_local(f"{args[1]} 12:00", tz)
         return start_local, end_local
 
+    # exact datetime
     if len(args) == 4:
         start_local = parse_local(f"{args[0]} {args[1]}", tz)
         end_local = parse_local(f"{args[2]} {args[3]}", tz)
@@ -363,14 +347,27 @@ def parse_range_args(args: list[str]):
     raise ValueError("Use /range YYYY-MM-DD YYYY-MM-DD or /range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM")
 
 
+def get_today_window_pm_style() -> tuple[datetime, datetime]:
+    tz = ZoneInfo(DEFAULT_TZ)
+    now_local = datetime.now(tz).replace(second=0, microsecond=0)
+
+    today_1200 = parse_local(now_local.strftime("%Y-%m-%d") + " 12:00", tz)
+
+    if now_local >= today_1200:
+        start_local = today_1200
+    else:
+        yesterday = now_local - timedelta(days=1)
+        start_local = parse_local(yesterday.strftime("%Y-%m-%d") + " 12:00", tz)
+
+    end_local = now_local
+    return start_local, end_local
+
+
 async def send_report(update: Update, report: dict):
     await update.message.reply_text(format_summary(report))
 
     daily_text = "Daily breakdown:\n\n" + format_df_text(report["daily_df"])
     await update.message.reply_text(f"<pre>{daily_text}</pre>", parse_mode="HTML")
-
-    hourly_text = "Hourly breakdown:\n\n" + format_df_text(report["hourly_df"])
-    await update.message.reply_text(f"<pre>{hourly_text}</pre>", parse_mode="HTML")
 
     if report["csv_path"]:
         with open(report["csv_path"], "rb") as f:
@@ -381,6 +378,9 @@ async def send_report(update: Update, report: dict):
             await update.message.reply_photo(InputFile(f, filename=report["png_path"].name))
 
 
+# =========================
+# COMMANDS
+# =========================
 async def remember_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.application.bot_data["watch_chat_id"] = update.effective_chat.id
 
@@ -420,10 +420,7 @@ async def cmd_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await remember_chat(update, context)
     try:
-        tz = ZoneInfo(DEFAULT_TZ)
-        now_local = datetime.now(tz)
-        start_local = parse_local(now_local.strftime("%Y-%m-%d 00:00"), tz)
-        end_local = parse_local(now_local.strftime("%Y-%m-%d %H:%M"), tz)
+        start_local, end_local = get_today_window_pm_style()
         report = build_report_exact(start_local, end_local, STATE["mode"])
         await send_report(update, report)
     except Exception as e:
@@ -459,6 +456,9 @@ async def cmd_watch_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Watch disabled.")
 
 
+# =========================
+# WATCHER
+# =========================
 async def watcher(context: ContextTypes.DEFAULT_TYPE):
     if not STATE.get("watch_enabled"):
         return
@@ -493,10 +493,8 @@ async def watcher(context: ContextTypes.DEFAULT_TYPE):
                 if newest.get("url"):
                     text += f"\n\n{newest['url']}"
                 await context.bot.send_message(chat_id=chat_id, text=text)
-    except Exception as e:
-        chat_id = context.bot_data.get("watch_chat_id")
-        if chat_id:
-            await context.bot.send_message(chat_id=chat_id, text=f"Watcher error: {e}")
+    except Exception:
+        pass
 
 
 def main():
